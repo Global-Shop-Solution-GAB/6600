@@ -1,0 +1,199 @@
+﻿Program.Sub.ScreenSU.Start
+Gui.Form..Create(BaseForm)
+Gui.Form..Caption("ARC 6600 Maintenance")
+Gui.Form..Size(326,196)
+Gui.Form..MinX(0)
+Gui.Form..MinY(0)
+Gui.Form..Position(0,0)
+Gui.Form..AlwaysOnTop(False)
+Gui.Form..FontName("Tahoma")
+Gui.Form..FontSize(8.25)
+Gui.Form..ControlBox(True)
+Gui.Form..MaxButton(True)
+Gui.Form..MinButton(True)
+Gui.Form..MousePointer(0)
+Gui.Form..Moveable(True)
+Gui.Form..Sizeable(True)
+Gui.Form..ShowInTaskBar(True)
+Gui.Form..TitleBar(True)
+Gui.Form..Event(UnLoad,Form_UnLoad)
+Gui.Form.cmdSave.Create(Button)
+Gui.Form.cmdSave.Enabled(True)
+Gui.Form.cmdSave.Visible(True)
+Gui.Form.cmdSave.Zorder(0)
+Gui.Form.cmdSave.Size(58,23)
+Gui.Form.cmdSave.Position(239,26)
+Gui.Form.cmdSave.Caption("")
+Gui.Form.cmdSave.FontName("Tahoma")
+Gui.Form.cmdSave.FontSize(8.25)
+Gui.Form.cmdSave.Event(Click,cmdSave_Click)
+Gui.Form.cmdSave.SvgPicture("icon_save_all_color")
+Gui.Form.cmdSave.ImageAlign(8)
+Gui.Form.cmdSave.Anchor(9)
+Gui.Form.txt_user.Create(TextBox,"",True,194,20,0,11,28,True,0,"Tahoma",8.25,,1)
+Gui.Form.txt_pass.Create(TextBox,"",True,195,20,0,11,78,True,0,"Tahoma",8.25,,1)
+Gui.Form.lbl2.Create(Label,"API User",True,49,13,0,11,11,True,0,"Tahoma",8.25,,0,0)
+Gui.Form.lbl2.BorderStyle(0)
+Gui.Form.lbl2.FontStyle(True,False,False,False,False)
+Gui.Form.lbl3.Create(Label,"API Password",True,77,13,0,11,61,True,0,"Tahoma",8.25,,0,0)
+Gui.Form.lbl3.BorderStyle(0)
+Gui.Form.lbl3.FontStyle(True,False,False,False,False)
+Gui.Form.lbl1.Create(Label,"Host URL",True,51,13,0,11,113,True,0,"Tahoma",8.25,,0,0)
+Gui.Form.lbl1.BorderStyle(0)
+Gui.Form.lbl1.FontStyle(True,False,False,False,False)
+Gui.Form.txt_URL.Create(TextBox,"",True,285,20,0,11,130,True,0,"Tahoma",8.25,,1)
+Program.Sub.ScreenSU.End
+
+Program.Sub.Preflight.Start
+V.Global.sError.Declare(String)
+V.Global.bFlag.Declare(Boolean, False)
+
+Program.Sub.Preflight.End
+Program.Sub.Main.Start
+'Author: Arturo Almaguer
+'Date: 22 March 2022
+'Customer: Automation Tool & Die, quote number 13078
+'This program is the maintenance menu for ARC ID 6600 under XX - XX - XXX Maintenance [6600]
+
+Function.Intrinsic.UI.UsePixels ' Allows you to use Pixels instead of Twips throughout
+
+F.Intrinsic.Control.Try
+
+	F.Intrinsic.Control.CallSub(CheckTable)
+	F.Intrinsic.Control.CallSub(LoadData)
+	
+	GUI.Form..Show
+
+F.Intrinsic.Control.Catch
+
+	F.Intrinsic.Control.CallSub(CatchError)
+	
+F.Intrinsic.Control.EndTry
+Program.Sub.Main.End
+Program.Sub.CheckTable.Start
+'This subroutine verifies if tables exists in DB, creates it if it doesn't
+F.Intrinsic.Control.Try
+
+	V.Local.bExists.Declare(Boolean)
+	
+	F.ODBC.Connection!Con.OpenCompanyConnection
+	F.ODBC.Connection!Con.TableExists("GCG_6600_API", V.Local.bExists)
+		F.Intrinsic.Control.If(V.Local.bExists, =, False)
+			F.ODBC.Connection!Con.Execute("CREATE TABLE GCG_6600_API (API_USER CHAR(20), API_PASS CHAR(20), HOST_URL CHAR(80));")
+		F.Intrinsic.Control.EndIf
+	F.ODBC.Connection!Con.Close
+
+F.Intrinsic.Control.Catch
+
+	F.Intrinsic.Control.CallSub(CatchError)
+	
+F.Intrinsic.Control.EndTry
+Program.Sub.CheckTable.End
+Program.Sub.LoadData.Start
+'This subroutine loads the data 
+F.Intrinsic.Control.Try
+	
+	V.Local.sReturn.Declare(String)
+	V.Local.sUser.Declare(String)
+	V.Local.sPass.Declare(String)
+	V.Local.sURL.Declare(String)
+	
+	'Getting data stored in custom table
+	F.ODBC.Connection!Con.OpenCompanyConnection
+	F.ODBC.Connection!Con.ExecuteAndReturn("select * from GCG_6600_API", V.Local.sReturn)
+	F.ODBC.Connection!Con.Close
+	
+	'If there are values, then decrypt them and show in screen. If there is no record, leave blanks.
+	F.Intrinsic.Control.If(V.Ambient.ExecuteAndReturnEOF, =, False)
+
+		'There are existing values
+		F.Intrinsic.String.Split(V.Local.sReturn, "*!*", V.Local.sReturn)
+		V.Local.sUser.Set(V.Local.sReturn(0).Trim)
+		V.Local.sPass.Set(V.Local.sReturn(1).Trim)
+		V.Local.sURL.Set(V.Local.sReturn(2).Trim)
+		
+		'Decrypting values stored in custom table
+		F.Intrinsic.String.WeakDecryption(V.Local.sUser,V.Local.sUser)
+		F.Intrinsic.String.WeakDecryption(V.Local.sPass,V.Local.sPass)
+		F.Intrinsic.String.WeakDecryption(V.Local.sURL,V.Local.sURL)
+		
+		'Displaying values in screen
+		GUI.Form.txt_user.Text(V.Local.sUser)
+		GUI.Form.txt_pass.Text(V.Local.sPass)
+		GUI.Form.txt_URL.Text(V.Local.sURL)
+	
+	F.Intrinsic.Control.Else
+		
+		'Setting global variable to false so program identifies it needs to insert records for the first time
+		V.Global.bFlag.Set(True)
+		GUI.Form.txt_user.Text("")
+		GUI.Form.txt_pass.Text("")
+		GUI.Form.txt_URL.Text("")
+		
+	F.Intrinsic.Control.EndIf
+
+F.Intrinsic.Control.Catch
+
+	F.Intrinsic.Control.CallSub(CatchError)
+	
+F.Intrinsic.Control.EndTry
+Program.Sub.LoadData.End
+Program.Sub.Form_UnLoad.Start
+'Closes the connection if it is open
+f.Intrinsic.Control.If(v.ODBC.con.exists,=,"1") 	
+    f.ODBC.Connection!Con.Close
+f.Intrinsic.Control.EndIf
+
+'Ending program
+F.Intrinsic.Control.End
+Program.Sub.Form_UnLoad.End
+Program.Sub.CatchError.Start
+'To display the error
+F.Intrinsic.String.Build("Project: {0}{1}{1}Subroutine: {2}{1}Error Occurred {3} with description {4}{1}{1}GAB Version: {5}", V.Ambient.ScriptPath, V.Ambient.Newline, V.Ambient.SubroutineCalledFrom, V.Ambient.ErrorNumber, V.Ambient.ErrorDescription, V.Ambient.GABVersion, V.Global.sError) 
+F.Intrinsic.UI.Msgbox(V.Global.sError)
+F.Intrinsic.Control.CallSub("Form_UnLoad")
+Program.Sub.CatchError.End
+Program.Sub.cmdSave_Click.Start
+'This subroutine saves the data in the custom table after the user clicks on the Save button
+F.Intrinsic.Control.Try
+
+	V.Local.sSQL.Declare(String)
+	V.Local.sUser.Declare(String)
+	V.Local.sPass.Declare(String)
+	V.Local.sURL.Declare(String)
+	
+	V.Local.sUser.Set(V.Screen.Form!txt_user.Text.Trim)
+	V.Local.sPass.Set(V.Screen.Form!txt_pass.Text.Trim)
+	V.Local.sURL.Set(V.Screen.Form!txt_URL.Text.Trim)
+	
+	'Encrypting new username and password
+	F.Intrinsic.String.WeakEncryption(V.Local.sUser,V.Local.sUser)
+	F.Intrinsic.String.WeakEncryption(V.Local.sPass,V.Local.sPass)
+	F.Intrinsic.String.WeakEncryption(V.Local.sURL,V.Local.sURL)
+	
+	'Global variable allows the program to identify if it needs to insert or update 
+	F.Intrinsic.Control.If(V.Global.bFlag, =, True)
+		F.Intrinsic.String.Build("insert into GCG_6600_API(API_USER, API_PASS, HOST_URL) values('{0}','{1}','{2}');", V.Local.sUser, V.Local.sPass, V.Local.sURL, V.Local.sSQL)
+	F.Intrinsic.Control.Else
+		F.Intrinsic.String.Build("update GCG_6600_API set API_USER = '{0}', API_PASS = '{1}', HOST_URL = '{2}';", V.Local.sUser, V.Local.sPass, V.Local.sURL, V.Local.sSQL)
+	F.Intrinsic.Control.EndIf
+	
+	'Executing SQL query
+	F.ODBC.Connection!Con.OpenCompanyConnection
+	F.ODBC.Connection!Con.Execute(V.Local.sSQL)
+	F.ODBC.Connection!Con.Close
+	
+	'Displaying message box
+	F.Intrinsic.UI.Msgbox("New values have been saved.", "Success")
+	
+F.Intrinsic.Control.Catch
+
+	F.Intrinsic.Control.CallSub(CatchError)
+	
+F.Intrinsic.Control.EndTry
+Program.Sub.cmdSave_Click.End
+
+Program.Sub.Comments.Start
+${$5$}$3.0.0.0$}$1
+${$6$}$apadilla$}$20220708083554014$}$Lag9STqBJOmNXSbd5+msRcBWPGz0aFqSzPePUG9qWbxslOUhYB1MJSJR+ygVs2pQDMHwi9NdUZa+KytIczuVWg==
+Program.Sub.Comments.End
