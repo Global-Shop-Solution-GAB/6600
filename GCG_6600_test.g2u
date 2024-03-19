@@ -1,0 +1,1214 @@
+﻿Program.Sub.Preflight.Start
+V.Global.sURL.Declare(String)
+V.Global.sError.Declare(String)
+V.Global.sToken.Declare(String)
+V.Global.sPart.Declare(String)
+V.Global.sToolID.Declare(String)
+
+Program.Sub.Preflight.End
+
+Program.Sub.Main.Start
+'Author: Arturo Almaguer
+'Date: 15 February 2022
+'Customer: Automation Tool & Die, quote number 13078
+'This program is an integration project between GSS and Shop Floor Connect
+'This program is triggered off hook 16800
+
+Function.Intrinsic.UI.UsePixels ' Allows you to use Pixels instead of Twips throughout
+
+F.Intrinsic.Control.Try
+
+	v.Local.sJob.Declare(String)
+	v.Local.sSuffix.Declare(String)
+	v.Local.sPrevPriority.Declare(String)
+	v.Local.sPriority.Declare(String)
+	
+	F.Intrinsic.Control.SelectCase(V.Caller.Hook)
+		
+		F.Intrinsic.Control.Case(16660)
+	
+			F.Intrinsic.Control.If(V.Caller.Switches, =, "O")
+				V.Passed.GLOBAL.Set(V.Passed.000022)
+			F.Intrinsic.Control.EndIf
+	
+		F.Intrinsic.Control.Case(16800)
+	
+			'Setting variables to passed job and suffix numbers
+			v.Local.sJob.Set(V.Passed.009000)
+			v.Local.sSuffix.Set(V.Passed.009001)
+			
+'			'Customer testing WO
+			v.Local.sJob.Set("010407")
+			v.Local.sSuffix.Set("C01")
+		
+			'2 = New WO, 1 = Open WO
+			F.Intrinsic.Control.If(V.Caller.Switches, =, "2")
+				
+				'Calling sub to trigger all processes in order to post new job to SFC
+				F.Intrinsic.Control.CallSub("PostToSFC", "Job", v.Local.sJob, "Suffix", v.Local.sSuffix)
+		
+			f.Intrinsic.Control.ElseIf(V.Caller.Switches, =, "1")
+			
+				V.Local.sPrevPriority.Set(V.Passed.GLOBAL)
+'				F.Intrinsic.String.Left(V.Local.sPrevPriority, 2, V.Local.sPrevPriority)
+				
+				F.Intrinsic.Control.If(V.Local.sPrevPriority, =, "XXX")
+			
+					'If program goes into this section, it means the job had an error when trying to post to SFC when job was created. Perform POST process as if this was a new job. 
+					F.Intrinsic.Control.CallSub("PostToSFC", "Job", v.Local.sJob, "Suffix", v.Local.sSuffix)
+					
+				F.Intrinsic.Control.Else
+					
+					'REGULAR UPDATE PROCESS.
+					'Calling sub to verify if bearer token is still valid
+					F.Intrinsic.Control.CallSub("TokenValidation")
+					
+					'Calling sub to validate the WO's priority code
+					F.Intrinsic.Control.CallSub("PriorityCode", "Job", v.Local.sJob, "Suffix", v.Local.sSuffix)
+				
+				F.Intrinsic.Control.EndIf
+			
+			F.Intrinsic.Control.EndIf
+	
+	F.Intrinsic.Control.EndSelect
+
+F.Intrinsic.Control.Catch
+	
+	F.Intrinsic.Control.CallSub(CatchError)
+	
+F.Intrinsic.Control.EndTry
+Program.Sub.Main.End
+
+Program.Sub.UserAuthentication.Start
+'This subroutine executes the API authentication process passing user and password to get JWT bearer token
+
+F.Intrinsic.Control.Try
+
+	V.Local.sReturn.Declare(String)
+	V.Local.sUser.Declare(String)
+	V.Local.sPass.Declare(String)
+	V.Local.sURL.Declare(String)
+	V.Local.sEndPointURL.Declare(String)
+	V.Local.sBody.Declare(String)
+	V.Local.sToken.Declare(String)
+	V.Local.sReturnDate.Declare(String)
+	V.Local.sSQL.Declare(String)
+	V.Local.sEncryptedToken.Declare(String)
+	
+	'Getting user, pass and URL stored in custom table
+	F.ODBC.Connection!Con.OpenCompanyConnection
+	F.ODBC.Connection!Con.ExecuteAndReturn("select * from GCG_6600_API", V.Local.sReturn)
+	F.ODBC.Connection!Con.Close
+	
+	F.Intrinsic.Control.If(V.Ambient.ExecuteAndReturnEOF, =, False)
+		
+		'There are existing values
+		F.Intrinsic.String.Split(V.Local.sReturn, "*!*", V.Local.sReturn)
+		V.Local.sUser.Set(V.Local.sReturn(0).Trim)
+		V.Local.sPass.Set(V.Local.sReturn(1).Trim)
+		V.Local.sURL.Set(V.Local.sReturn(2).Trim)
+		
+		'Decrypting values
+		F.Intrinsic.String.WeakDecryption(V.Local.sUser,V.Local.sUser)
+		F.Intrinsic.String.WeakDecryption(V.Local.sPass,V.Local.sPass)
+		F.Intrinsic.String.WeakDecryption(V.Local.sURL,V.Local.sURL)
+		v.Global.sURL.Set(V.Local.sURL)
+			
+	F.Intrinsic.Control.Else
+		
+		'No records in custom table, displaying error message
+		F.Intrinsic.UI.Msgbox("Please set up the API data in the maintenance menu. Ending program.", "ERROR")
+		F.Intrinsic.Control.CallSub("Unload")
+		
+	F.Intrinsic.Control.EndIf
+	
+	''POST PROCESS
+	F.Communication.HTTP.ResetHeaders
+	F.Communication.HTTP.SetProperty("HTTPMethod", "POST")
+	
+	'URL + Endpoint
+	F.Intrinsic.String.Build("{0}{1}", V.Local.sURL, "Authenticate", V.Local.sEndPointURL)
+	
+	'Setting properties
+	F.Communication.HTTP.SetProperty("User",V.Local.sUser)
+	F.Communication.HTTP.SetProperty("Password",V.Local.sPass)
+	F.Communication.HTTP.SetProperty("ContentType","application/json")
+	F.Communication.HTTP.SetProperty("Accept","text/plain")
+	
+	'Building JSON body to post
+	F.Intrinsic.String.Build("{"accountName":"{0}","password":"{1}"}", V.Local.sUser, V.Local.sPass, V.Local.sBody)
+	F.Communication.HTTP.SetProperty("PostData", V.Local.sBody)
+	F.Communication.HTTP.Post(V.Local.sEndPointURL)
+	
+	F.Communication.HTTP.DoEvents()
+	
+	'Return from the request is the bearer token.
+	f.Communication.HTTP.ReadProperty("TransferredData", V.Local.sToken)
+	
+	'Validating whether a record exists in custom table.
+	F.ODBC.Connection!Con.OpenCompanyConnection
+	F.ODBC.Connection!Con.ExecuteAndReturn("select DATE_IN from GCG_6600_TOKEN", V.Local.sReturnDate)
+	
+	F.Intrinsic.Control.If(V.Ambient.ExecuteAndReturnEOF, =, False)
+		F.Intrinsic.String.Build("update GCG_6600_TOKEN set API_TOKEN = '{0}', DATE_IN = '{1}';", V.Local.sToken, V.Ambient.Date.PervasiveDate, V.Local.sSQL)
+	F.Intrinsic.Control.Else
+		F.Intrinsic.String.Build("insert into GCG_6600_TOKEN(API_TOKEN, DATE_IN) values('{0}','{1}');", V.Local.sToken, V.Ambient.Date.PervasiveDate, V.Local.sSQL)
+	F.Intrinsic.Control.EndIf
+	
+	F.ODBC.Connection!Con.Execute(V.Local.sSQL)
+	F.ODBC.Connection!Con.Close
+	
+	'Setting global variable
+	v.Global.sToken.Set(V.Local.sToken)
+
+F.Intrinsic.Control.Catch
+	
+	F.Intrinsic.Control.CallSub(CatchError)
+	
+F.Intrinsic.Control.EndTry
+Program.Sub.UserAuthentication.End
+
+Program.Sub.GetMachineConfiguration.Start
+'Getting all existing machines in Shop Floor Connect, 3rd party software.
+
+F.Intrinsic.Control.Try
+
+	V.Local.sTemp.Declare(String)
+	V.Local.bHasXPath.Declare(Boolean)
+	V.Local.iCounter.Declare(Long)
+	V.Local.sXPath.Declare(String)
+	V.Local.sEndPointURL.Declare(String)
+	V.Local.sFile.Declare(String)
+	V.Local.sAuthorization.Declare(String)
+	V.Local.idtCounter.Declare(Long)
+	
+	'Creating dt
+	F.Data.DataTable.Create("dtSFCMachines", True)
+	F.Data.DataTable.AddColumn("dtSFCMachines", "name", "String")
+	F.Data.DataTable.AddColumn("dtSFCMachines", "machineType", "String")
+	
+	'GET process
+	F.Communication.HTTP.ResetHeaders
+	F.Communication.HTTP.SetProperty("HTTPMethod", "GET")
+	
+	'URL + Endpoint
+	F.Intrinsic.String.Build("{0}{1}", V.Global.sURL, "MachineConfiguration", V.Local.sEndPointURL)
+	
+	'Setting properties
+	F.Communication.HTTP.SetProperty("URL", V.Local.sEndPointURL)
+	F.Communication.HTTP.SetProperty("Authorization", V.Global.sToken)
+	
+	'Local File - The path to a local file for downloading. If the file exists, it is overwritten.
+	F.Intrinsic.String.Build("{0}\Machines.json", V.Caller.TempDir, V.Local.sFile)
+	F.Communication.HTTP.SetProperty("LocalFile", V.Local.sFile)
+	
+	F.Communication.HTTP.Get(V.Local.sEndPointURL)
+	
+	'Reading JSON file
+	F.Communication.JSON.ParseFile(V.Local.sFile)
+	
+	'Nodes start on 1, not 0
+	V.Local.iCounter.Set(1)
+	V.Local.bHasXPath.Set(True)
+	
+	'Do Until because if XPath doesnt exists, then I dont need to loop
+	F.Intrinsic.Control.DoUntil(V.Local.bHasXPath.Not)
+		
+		'Using Counter variable because I have multiple nodes that I want to pull a value in
+		'F.Intrinsic.String.Build("/json/[{0}]/name/",V.Local.iCounter,V.Local.sXPath)
+		F.Intrinsic.String.Build("/json/[{0}]/",V.Local.iCounter,V.Local.sXPath)
+		'Is there a path at this location -> V.Local.sXPath
+		F.Communication.JSON.HasXPath(V.Local.sXPath,V.Local.bHasXPath)
+		
+		F.Intrinsic.Control.If(V.Local.bHasXPath)
+			
+			'Building string to read name parameter in all nodes
+			F.Intrinsic.String.Build("/json/[{0}]/name/",V.Local.iCounter,V.Local.sXPath)
+			F.Communication.JSON.SetProperty("XPath",V.Local.sXPath)
+			F.Communication.JSON.ReadProperty("XText",V.Local.sTemp)
+			F.Intrinsic.String.TrimChar(V.Local.sTemp,V.Ambient.DblQuote,V.Local.sTemp)
+			
+			'Adding row to dt
+			F.Data.DataTable.AddRow("dtSFCMachines", "name", V.Local.sTemp)
+			
+			'Building string to read machineType parameter in all nodes
+			F.Intrinsic.String.Build("/json/[{0}]/machineType/",V.Local.iCounter,V.Local.sXPath)
+			F.Communication.JSON.SetProperty("XPath",V.Local.sXPath)
+			F.Communication.JSON.ReadProperty("XText",V.Local.sTemp)
+			F.Intrinsic.String.TrimChar(V.Local.sTemp,V.Ambient.DblQuote,V.Local.sTemp)
+			
+			'Adding value to same row in dt
+			f.Intrinsic.Math.Sub(V.Local.iCounter, 1, V.Local.idtCounter)
+			F.Data.DataTable.SetValue("dtSFCMachines", V.Local.idtCounter, "machineType", V.Local.sTemp)
+			
+		F.Intrinsic.Control.EndIf
+		
+		F.Intrinsic.Math.Add(V.Local.iCounter,1,V.Local.iCounter)
+		
+	F.Intrinsic.Control.Loop
+	
+	'Adding column to be used as a flag later on. The 1 means the machine exist in SFC, thus all records with a 1.
+	F.Data.DataTable.AddColumn("dtSFCMachines", "FLAG_SFC", "String", 1)
+
+F.Intrinsic.Control.Catch
+	
+	F.Intrinsic.Control.CallSub(CatchError)
+	
+F.Intrinsic.Control.EndTry
+Program.Sub.GetMachineConfiguration.End
+
+Program.Sub.GetMachineTypeConf.Start
+'Getting the machines type configuration from SFC.
+
+F.Intrinsic.Control.Try
+
+	V.Local.sTemp.Declare(String)
+	V.Local.bHasXPath.Declare(Boolean)
+	V.Local.iCounter.Declare(Long)
+	V.Local.sXPath.Declare(String)
+	V.Local.sEndPointURL.Declare(String)
+	V.Local.sFile.Declare(String)
+	V.Local.sAuthorization.Declare(String)
+	V.Local.idtCounter.Declare(Long)
+	
+	'Creating dt
+	F.Data.DataTable.Create("dtSFCMachineType", True)
+	F.Data.DataTable.AddColumn("dtSFCMachineType", "name", "String")
+	F.Data.DataTable.AddColumn("dtSFCMachineType", "primary", "String")
+	F.Data.DataTable.AddColumn("dtSFCMachineType", "secondary", "String")
+	
+	'GET process
+	F.Communication.HTTP.ResetHeaders
+	F.Communication.HTTP.SetProperty("HTTPMethod", "GET")
+	
+	'URL + Endpoint
+	F.Intrinsic.String.Build("{0}{1}", V.Global.sURL, "MachineTypeConfiguration", V.Local.sEndPointURL)
+	
+	'Setting properties
+	F.Communication.HTTP.SetProperty("URL", V.Local.sEndPointURL)
+	F.Communication.HTTP.SetProperty("Authorization", V.Global.sToken)
+	
+	'Local File - The path to a local file for downloading. If the file exists, it is overwritten.
+	F.Intrinsic.String.Build("{0}\MachineType.json", V.Caller.TempDir, V.Local.sFile)
+	F.Communication.HTTP.SetProperty("LocalFile", V.Local.sFile)
+	
+	F.Communication.HTTP.Get(V.Local.sEndPointURL)
+	
+	'Reading JSON file
+	F.Communication.JSON.ParseFile(V.Local.sFile)
+	
+	'Nodes start on 1, not 0
+	V.Local.iCounter.Set(1)
+	V.Local.bHasXPath.Set(True)
+	
+	'Do Until because if XPath doesnt exists, then I dont need to loop
+	F.Intrinsic.Control.DoUntil(V.Local.bHasXPath.Not)
+		
+		'Using Counter variable because I have multiple nodes that I want to pull a value in
+		'F.Intrinsic.String.Build("/json/[{0}]/name/",V.Local.iCounter,V.Local.sXPath)
+		F.Intrinsic.String.Build("/json/[{0}]/",V.Local.iCounter,V.Local.sXPath)
+		'Is there a path at this location -> V.Local.sXPath
+		F.Communication.JSON.HasXPath(V.Local.sXPath,V.Local.bHasXPath)
+		
+		F.Intrinsic.Control.If(V.Local.bHasXPath)
+			
+			'Building string to read name parameter in all nodes
+			F.Intrinsic.String.Build("/json/[{0}]/typeName/",V.Local.iCounter,V.Local.sXPath)
+			F.Communication.JSON.SetProperty("XPath",V.Local.sXPath)
+			F.Communication.JSON.ReadProperty("XText",V.Local.sTemp)
+			F.Intrinsic.String.TrimChar(V.Local.sTemp,V.Ambient.DblQuote,V.Local.sTemp)
+			
+			'Adding row to dt
+			F.Data.DataTable.AddRow("dtSFCMachineType", "name", V.Local.sTemp)
+			
+			'Building string to read machineType parameter in all nodes
+			F.Intrinsic.String.Build("/json/[{0}]/primaryTypeName/",V.Local.iCounter,V.Local.sXPath)
+			F.Communication.JSON.SetProperty("XPath",V.Local.sXPath)
+			F.Communication.JSON.ReadProperty("XText",V.Local.sTemp)
+			F.Intrinsic.String.TrimChar(V.Local.sTemp,V.Ambient.DblQuote,V.Local.sTemp)
+			
+			'Adding value to same row in dt
+			f.Intrinsic.Math.Sub(V.Local.iCounter, 1, V.Local.idtCounter)
+			F.Data.DataTable.SetValue("dtSFCMachineType", V.Local.idtCounter, "primary", V.Local.sTemp)
+			
+			'Building string to read machineType parameter in all nodes
+			F.Intrinsic.String.Build("/json/[{0}]/secondaryTypeName/",V.Local.iCounter,V.Local.sXPath)
+			F.Communication.JSON.SetProperty("XPath",V.Local.sXPath)
+			F.Communication.JSON.ReadProperty("XText",V.Local.sTemp)
+			F.Intrinsic.String.TrimChar(V.Local.sTemp,V.Ambient.DblQuote,V.Local.sTemp)
+			
+			'Adding value to same row in dt
+			f.Intrinsic.Math.Sub(V.Local.iCounter, 1, V.Local.idtCounter)
+			F.Data.DataTable.SetValue("dtSFCMachineType", V.Local.idtCounter, "secondary", V.Local.sTemp)
+			
+		F.Intrinsic.Control.EndIf
+		
+		F.Intrinsic.Math.Add(V.Local.iCounter,1,V.Local.iCounter)
+		
+	F.Intrinsic.Control.Loop
+
+F.Intrinsic.Control.Catch
+	
+	F.Intrinsic.Control.CallSub(CatchError)
+	
+F.Intrinsic.Control.EndTry
+Program.Sub.GetMachineTypeConf.End
+
+Program.Sub.CheckTable.Start
+'This subroutine verifies if custom table exists in DB, creates it if it doesn't
+
+F.Intrinsic.Control.Try
+
+	V.Local.bExists.Declare(Boolean)
+	
+	F.ODBC.Connection!Con.OpenCompanyConnection
+	F.ODBC.Connection!Con.TableExists("GCG_6600_TOKEN", V.Local.bExists)
+		F.Intrinsic.Control.If(V.Local.bExists, =, False)
+			F.ODBC.Connection!Con.Execute("CREATE TABLE GCG_6600_TOKEN (API_TOKEN VARCHAR(850), DATE_IN DATE);")
+		F.Intrinsic.Control.EndIf
+	F.ODBC.Connection!Con.Close
+
+F.Intrinsic.Control.Catch
+
+	F.Intrinsic.Control.CallSub(CatchError)
+	
+F.Intrinsic.Control.EndTry
+Program.Sub.CheckTable.End
+
+Program.Sub.GetData.Start
+'This subroutine retrieves the host URL and the API token in case they exist already in custom tables
+
+F.Intrinsic.Control.Try
+	
+	v.Local.sURL.Declare(String)
+	v.Local.sToken.Declare(String)
+	
+	F.ODBC.Connection!Con.OpenCompanyConnection
+	F.ODBC.Connection!Con.ExecuteAndReturn("select RTRIM(HOST_URL) HOST_URL from GCG_6600_API", V.Local.sURL)
+	
+	'If host URL exists, decrypt it and set it as a global variable. End program if it doesn't.
+	F.Intrinsic.Control.If(V.Ambient.ExecuteAndReturnEOF, =, False)
+		
+		F.Intrinsic.String.WeakDecryption(V.Local.sURL,V.Local.sURL)
+		v.Global.sURL.Set(V.Local.sURL)
+			
+	F.Intrinsic.Control.Else
+		
+		'No records in custom table, displaying error message
+		F.Intrinsic.UI.Msgbox("Please set up the API data in the maintenance menu. Ending program.", "ERROR")
+		F.Intrinsic.Control.CallSub("Unload")
+		
+	F.Intrinsic.Control.EndIf
+	
+	'Getting bearer token. At this point the Execeute and Return EOF is not necessary because program already validated that the token exists.
+	F.ODBC.Connection!Con.ExecuteAndReturn("select API_TOKEN from GCG_6600_TOKEN", V.Local.sToken)
+	F.ODBC.Connection!Con.Close
+	
+	'Setting global variable
+	v.Global.sToken.Set(V.Local.sToken)
+
+F.Intrinsic.Control.Catch
+	
+	F.Intrinsic.Control.CallSub(CatchError)
+	
+F.Intrinsic.Control.EndTry
+Program.Sub.GetData.End
+
+Program.Sub.Unload.Start
+'Closes the connection if it is open
+f.Intrinsic.Control.If(v.ODBC.con.exists,=,"1") 	
+    f.ODBC.Connection!Con.Close
+f.Intrinsic.Control.EndIf
+
+'Ending program
+F.Intrinsic.Control.End
+Program.Sub.Unload.End
+
+Program.Sub.PostJobs.Start
+'This subroutine posts jobs to SFC
+
+F.Intrinsic.Control.Try
+
+	v.Local.sEndPointURL.Declare(String)
+	v.Local.sBody.Declare(String)
+	v.Local.sResponse.Declare(String)
+	v.Local.sSQL.Declare(String)
+	V.Local.iCounter.Declare(Long)
+	V.Local.iCounter2.Declare(Long)
+	v.Local.sWC.Declare(String)
+	V.Local.dDueDate.Declare(Date)
+	V.Local.sDueDate.Declare(String)
+	V.Local.sTime.Declare(String)
+	V.Local.sMessage.Declare(String)
+
+	'Using dtUniqueWC to use iCounter for Priority value.
+	F.Intrinsic.Control.For(V.Local.iCounter, 0, V.DataTable.dtUniqueWCs.RowCount--, 1)
+	
+		V.Local.sWC.Set(V.DataTable.dtUniqueWCs(V.Local.iCounter).WC!FieldValTrim)
+		F.Intrinsic.String.Build("[WC] = '{0}'", V.Local.sWC, V.Local.sSQL)
+		F.Data.DataView.Create("dtMatchedWCs", "dvMatchedWCs", 22, V.Local.sSQL,"")	
+		
+		F.Intrinsic.Control.For(V.Local.iCounter2, 0, V.DataView.dtMatchedWCs!dvMatchedWCs.RowCount--, 1) 
+			
+			'POST PROCESS
+			F.Communication.HTTP.ResetHeaders
+			F.Communication.HTTP.SetProperty("HTTPMethod", "POST")
+			
+			'URL + Endpoint
+			F.Intrinsic.String.Build("{0}{1}", V.Global.sURL, "Jobs", V.Local.sEndPointURL)
+			
+			'Setting properties
+			F.Communication.HTTP.SetProperty("URL", V.Local.sEndPointURL)
+			F.Communication.HTTP.SetProperty("Authorization", v.Global.sToken)
+			F.Communication.HTTP.SetProperty("ContentType","application/json")
+			F.Communication.HTTP.SetProperty("Accept","text/plain")	
+			
+			'Building due date string
+			V.Local.dDueDate.Set(V.DataView.dtMatchedWCs!dvMatchedWCs(V.Local.iCounter2).DATE_DUE!FieldVal)
+			F.Intrinsic.String.Format(V.Ambient.Now, "HH:NN:SS", V.Local.sTime)
+			F.Intrinsic.String.Build("{0}T{1}.9999999Z", V.Local.dDueDate.FormatYYYY-MM-DD, V.Local.sTime, V.Local.sDueDate)
+		
+			'Building JSON body to post
+			F.Intrinsic.String.Build("{"machineName": "{5}", "jobNumber": "{0}", "priority": {1}, "trackingItems": [{"typeName": "{6}","valueName": "{8}","valueDescription": "", "status": "Available", "machineTypeName": "{4}", "properties": null, "affiliations": []}, {"typeName": "{7}","valueName": "{9}","valueDescription": "", "status": "Available", "machineTypeName": "{4}", "properties": null, "affiliations": []}],"quantity": {2}, "dueDate": "{3}", "requeueActionType": "NONE", "requeuePercentage": 100, "comment": "", "autoGenerateJobNumber": false}", V.DataView.dtMatchedWCs!dvMatchedWCs(V.Local.iCounter2).JSS!FieldValTrim, v.Local.iCounter2, V.DataView.dtMatchedWCs!dvMatchedWCs(V.Local.iCounter2).UNITS_OPEN!FieldValLong, V.Local.sDueDate, V.DataView.dtMatchedWCs!dvMatchedWCs(V.Local.iCounter2).MACHINE_TYPE!FieldValTrim, V.DataView.dtMatchedWCs!dvMatchedWCs(V.Local.iCounter2).WC_DESCRIPTION!FieldValTrim, V.DataView.dtMatchedWCs!dvMatchedWCs(V.Local.iCounter2).PRIMARY!FieldValTrim, V.DataView.dtMatchedWCs!dvMatchedWCs(V.Local.iCounter2).SECONDARY!FieldValTrim, V.DataView.dtMatchedWCs!dvMatchedWCs(V.Local.iCounter2).PRIMARY_VALUE!FieldValTrim, V.DataView.dtMatchedWCs!dvMatchedWCs(V.Local.iCounter2).SECONDARY_VALUE!FieldValTrim, V.Local.sBody)
+
+			'Posting job to SFC
+			F.Communication.HTTP.SetProperty("PostData", V.Local.sBody)
+			F.Communication.HTTP.Post(V.Local.sEndPointURL)
+			
+			F.Communication.HTTP.DoEvents()
+			
+			f.Communication.HTTP.ReadProperty("TransferredData", V.Local.sResponse)
+			
+			'Logging job successfully posted to SFC.
+			F.Intrinsic.String.Build("Job {0} was posted to {1} machine by {2}.", V.DataView.dtMatchedWCs!dvMatchedWCs(V.Local.iCounter2).JSS!FieldValTrim, V.DataView.dtMatchedWCs!dvMatchedWCs(V.Local.iCounter2).WC_DESCRIPTION!FieldValTrim, V.Caller.User, V.Local.sMessage)
+			F.Intrinsic.Control.CallSub("Logging_CreatedJob", "Message", V.Local.sMessage)
+			
+		F.Intrinsic.Control.Next(V.Local.iCounter2)
+	
+		'Closing dv
+		F.Data.DataView.Close("dtMatchedWCs", "dvMatchedWCs")
+		
+	F.Intrinsic.Control.Next(V.Local.iCounter)
+
+F.Intrinsic.Control.Catch
+	
+	'Logging error that prevented job from being posted.
+	f.Communication.HTTP.ReadProperty("TransferredData", V.Local.sResponse)
+	F.Intrinsic.String.Build("Job {0} wasn't posted to SFC, Job {3}-{4}.{1}{2}.", V.DataView.dtMatchedWCs!dvMatchedWCs(V.Local.iCounter2).JSS!FieldValTrim, V.Ambient.Newline, V.Local.sResponse, V.DataView.dtMatchedWCs!dvMatchedWCs(V.Local.iCounter2).JOB!FieldValTrim, V.DataView.dtMatchedWCs!dvMatchedWCs(V.Local.iCounter2).SUFFIX!FieldValTrim, V.Local.sMessage)
+	F.Intrinsic.Control.CallSub("Logging_JobError", "Message", V.Local.sMessage)
+	F.Intrinsic.Control.CallSub("UpdatePriority", "Job", V.DataView.dtMatchedWCs!dvMatchedWCs(V.Local.iCounter2).JOB!FieldValTrim, "Suffix", V.DataView.dtMatchedWCs!dvMatchedWCs(V.Local.iCounter2).SUFFIX!FieldValTrim)
+	
+F.Intrinsic.Control.EndTry
+Program.Sub.PostJobs.End
+
+Program.Sub.CatchError.Start
+'To display the error
+F.Intrinsic.String.Build("Subroutine: {1}{0}Error Occurred {2} with description {3}", V.Ambient.Newline, V.Ambient.SubroutineCalledFrom, V.Ambient.ErrorNumber, V.Ambient.ErrorDescription, V.Global.sError) 
+F.Intrinsic.Control.CallSub("Logging_Error", "Message", V.Global.sError)
+F.Intrinsic.Control.CallSub("Unload")
+Program.Sub.CatchError.End
+
+Program.Sub.GetToolID.Start
+'This subroutine retrieves the tool ID associated to one of the material parts of the WO. One of them is the tool part, but there is no way to identify which one it is.
+
+F.Intrinsic.Control.Try
+
+	v.Local.sSQL.Declare(String)
+	v.Local.sParts.Declare(String)
+	v.Local.sToolID.Declare(String)
+	v.Local.sJob.Declare(String)
+	v.Local.sSuffix.Declare(String)
+	
+	v.Local.sJob.Set(v.Args.Job)
+	v.Local.sSuffix.Set(v.Args.Suffix)
+	
+	'Getting all part numbers for a job
+	F.ODBC.Connection!Con.OpenCompanyConnection
+	F.Intrinsic.String.Build("select RTRIM(PART) PART from V_JOB_OPERATIONS where JOB = '{0}' and SUFFIX = '{1}' and LMO = 'M' and SEQ < '990000';", v.Local.sJob, v.Local.sSuffix, V.Local.sSQL)
+	F.ODBC.Connection!Con.ExecuteAndReturn(V.Local.sSQL, V.Local.sParts)
+	
+	'Getting the tool id associated to the WOs tool. I assume it is the same tool id for all WCs.
+	F.Intrinsic.String.Replace(V.Local.sParts, "#$#", "', '", V.Local.sParts)
+	F.Intrinsic.String.Build("select RTRIM(USER30) USER30 from GAB_4912_USER_FIELDS where PART in ('{0}') and USER30 <> '';", V.Local.sParts, V.Local.sSQL)
+	F.ODBC.Connection!Con.ExecuteAndReturn(V.Local.sSQL, V.Local.sToolID)
+	
+	F.Intrinsic.Control.If(V.Ambient.ExecuteAndReturnEOF, =, False)
+		V.Global.sToolID.Set(V.Local.sToolID.Long)
+	f.Intrinsic.Control.Else
+		
+		'Stopping program since there is no tool ID. No Tool ID = program will fail posting the job to SFC.
+		F.Intrinsic.UI.Msgbox("No Tool ID associated to any of the WO's parts, Jobs won't be created into SFC.", "ERROR")
+		F.Intrinsic.Control.CallSub("UpdatePriority", "Job", v.Local.sJob, "Suffix", v.Local.sSuffix)
+		F.Intrinsic.Control.CallSub("Unload")
+		
+	F.Intrinsic.Control.EndIf
+	F.ODBC.Connection!Con.Close
+
+F.Intrinsic.Control.Catch
+
+	F.Intrinsic.Control.CallSub(CatchError)
+	
+F.Intrinsic.Control.EndTry
+Program.Sub.GetToolID.End
+
+Program.Sub.TokenValidation.Start
+'This subrourinte validates if bearer token stored in custom table is still valid. Bearer token doesn't work after 24 hours.
+
+F.Intrinsic.Control.Try
+
+	v.Local.sDate.Declare(String)
+	
+	'Validating whether bearer token is still valid
+	F.ODBC.Connection!Con.OpenCompanyConnection
+	F.ODBC.Connection!Con.ExecuteAndReturn("select DATE_IN from GCG_6600_TOKEN", V.Local.sDate)
+	F.ODBC.Connection!Con.Close
+	
+	F.Intrinsic.Control.If(V.Ambient.ExecuteAndReturnEOF, =, False)
+		
+		'Validating whether token date is different than today's date. If it is, create new token. Retrieve existing valid token if it doesn't.
+		F.Intrinsic.Control.If(V.Local.sDate.Date, <>, V.Ambient.Date)
+		
+			'Calling sub to create new bearer token
+			F.Intrinsic.Control.CallSub("UserAuthentication")
+			
+		F.Intrinsic.Control.Else
+		
+			'Calling sub to get existing token, which is valid for the whole day.
+			F.Intrinsic.Control.CallSub("GetData")
+			
+		F.Intrinsic.Control.EndIf
+		
+	F.Intrinsic.Control.Else
+	
+		'No Results, calling sub to create new bearer token
+		F.Intrinsic.Control.CallSub("UserAuthentication")
+	
+	F.Intrinsic.Control.EndIf
+
+F.Intrinsic.Control.Catch
+
+	F.Intrinsic.Control.CallSub(CatchError)
+	
+F.Intrinsic.Control.EndTry
+Program.Sub.TokenValidation.End
+
+Program.Sub.PriorityCode.Start
+'This subroutine valites a WO priority code and deletes jobs in SFC if it is 000
+
+F.Intrinsic.Control.Try
+
+	v.Local.sSQL.Declare(String)
+	v.Local.sEndPointURL.Declare(String)
+	v.Local.iCounter.Declare(Long)
+	v.Local.sPriority.Declare(String)
+	v.Local.sBody.Declare(String)
+	v.Local.sMessage.Declare(String)
+	v.Local.sResponse.Declare(String)
+	
+	'Getting WO's priority code
+	F.ODBC.Connection!Con.OpenCompanyConnection
+	F.Intrinsic.String.Build("select RTRIM(PRIORITY) PRIORITY from V_JOB_HEADER where JOB = '{0}' and SUFFIX = '{1}';", V.Args.Job, V.Args.Suffix, V.Local.sSQL)
+	F.ODBC.Connection!Con.ExecuteAndReturn(V.Local.sSQL, V.Local.sPriority)
+	F.ODBC.Connection!Con.Close
+	
+	'If it is marked with 000, it means job will be removed due to X reason. Program should delete all jobs in SFC linked to this WO.
+	F.Intrinsic.Control.If(V.Local.sPriority, =, "000")
+	
+		'Calling sub to get existing machine list in SFC
+		F.Intrinsic.Control.CallSub("GetMachineConfiguration")
+	
+		'Creating dt with all required information
+		F.ODBC.Connection!Con.OpenCompanyConnection
+		F.Intrinsic.String.Build("select RTRIM(A.JOB) JOB, RTRIM(A.SUFFIX) SUFFIX, RTRIM(A.JOB) + RTRIM(A.SUFFIX) + RTRIM(A.SEQ) JSS, RTRIM(A.PART) WC, RTRIM(UCASE(A.DESCRIPTION)) WC_DESCRIPTION_OLD, A.UNITS_OPEN, A.DATE_DUE, RTRIM(A.PART) + ' ' + RTRIM(B.WC_NAME) WC_DESCRIPTION from V_JOB_OPERATIONS A left join V_WORKCENTERS B on A.PART = B.MACHINE where A.JOB = '{0}' and A.SUFFIX = '{1}' and A.LMO = 'L' and A.SEQ < '995000' order by JSS ASC;", v.Args.Job, v.Args.Suffix, V.Local.sSQL)
+		F.Data.DataTable.CreateFromSQL("dtGSSWCs", "Con", V.Local.sSQL, True)
+		f.ODBC.Connection!Con.Close
+		
+		'Creating dictionary to validate whether each GSS WC exist in SFC. If there is no match, it means the program should not create the job in SFC.
+		F.Data.Dictionary.CreateFromDataTable("dictMachine", "dtSFCMachines", "name", "FLAG_SFC")
+		F.Data.DataTable.AddColumn("dtGSSWCs", "FLAG_MATCH", "String")
+		F.Data.Dictionary.SetDefaultReturn("dictMachine", "0")
+		F.Data.DataTable.FillFromDictionary("dtGSSWCs", "dictMachine", "WC_DESCRIPTION", "FLAG_MATCH")
+		F.Data.Dictionary.Close("dictMachine")
+		
+		'Creating final dt with all jobs to be created in SFC
+		F.Data.DataView.Create("dtGSSWCs", "dvGSSWCs", 22,"[FLAG_MATCH] = '1'","")	
+		F.Data.DataView.ToDataTable("dtGSSWCs", "dvGSSWCs","dtMatchedWCs", True)
+		F.Data.DataView.Close("dtGSSWCs", "dvGSSWCs")	
+		
+		'Looping through dt to delete all jobs in SFC
+		F.Intrinsic.Control.For(V.Local.iCounter, 0, V.DataTable.dtMatchedWCs.RowCount--, 1)
+		
+			'DELETE process
+			F.Communication.REST.SetProperty("HTTPMethod", "DELETE")
+			
+			'URL + Endpoint,
+			F.Intrinsic.String.Build("{0}{1}{2}", V.Global.sURL, "Jobs/job/", V.DataTable.dtMatchedWCs(V.Local.iCounter).JSS!FieldValTrim, V.Local.sEndPointURL)
+			
+			'Setting properties
+			F.Communication.REST.SetProperty("URL", V.Local.sEndPointURL)
+			F.Communication.REST.SetProperty("Authorization", V.Global.sToken)
+			F.Communication.REST.SetProperty("Accept","*/*")
+			
+			F.Communication.REST.Delete(V.Local.sEndPointURL)
+			
+			'Logging job successfully deleted from SFC.
+			F.Intrinsic.String.Build("Job {0} was deleted from {1} machine by {2}.", V.DataTable.dtMatchedWCs(V.Local.iCounter).JSS!FieldValTrim, V.DataTable.dtMatchedWCs(V.Local.iCounter).WC_DESCRIPTION!FieldValTrim, v.Caller.User, V.Local.sMessage)
+			F.Intrinsic.Control.CallSub("Logging_DeletedJob", "Message", V.Local.sMessage)
+			
+		F.Intrinsic.Control.Next(V.Local.iCounter)
+	
+	F.Intrinsic.Control.ElseIf(V.Local.sPriority, <>, "000", "AND", V.Local.sPriority, <>, "")
+		
+		F.Intrinsic.Control.If(V.Local.sPriority, <>, "XXX")
+			
+			'This would be a job whose priority code has been properly updated. Priority code is a number ###.
+			'UPDATE PROCESS
+			'Calling sub to get existing machine list in SFC
+			F.Intrinsic.Control.CallSub("GetMachineConfiguration")
+		
+			'Creating dt with all required information
+			F.ODBC.Connection!Con.OpenCompanyConnection
+			F.Intrinsic.String.Build("select RTRIM(A.JOB) JOB, RTRIM(A.SUFFIX) SUFFIX, RTRIM(A.JOB) + RTRIM(A.SUFFIX) + RTRIM(A.SEQ) JSS, RTRIM(A.PART) WC, RTRIM(UCASE(A.DESCRIPTION)) WC_DESCRIPTION_OLD, A.UNITS_OPEN, A.DATE_DUE, RTRIM(A.PART) + ' ' + RTRIM(B.WC_NAME) WC_DESCRIPTION from V_JOB_OPERATIONS A left join V_WORKCENTERS B on A.PART = B.MACHINE where A.JOB = '{0}' and A.SUFFIX = '{1}' and A.LMO = 'L' and A.SEQ < '995000' order by JSS ASC;", v.Args.Job, v.Args.Suffix, V.Local.sSQL)
+			F.Data.DataTable.CreateFromSQL("dtGSSWCs", "Con", V.Local.sSQL, True)
+			f.ODBC.Connection!Con.Close
+			
+			'Creating dictionary to validate whether each GSS WC exist in SFC. If there is no match, it means the program should not create the job in SFC.
+			F.Data.Dictionary.CreateFromDataTable("dictMachine", "dtSFCMachines", "name", "FLAG_SFC")
+			F.Data.DataTable.AddColumn("dtGSSWCs", "FLAG_MATCH", "String")
+			F.Data.Dictionary.SetDefaultReturn("dictMachine", "0")
+			F.Data.DataTable.FillFromDictionary("dtGSSWCs", "dictMachine", "WC_DESCRIPTION", "FLAG_MATCH")
+			F.Data.Dictionary.Close("dictMachine")
+			
+			'Creating final dt with all jobs to be created in SFC
+			F.Data.DataView.Create("dtGSSWCs", "dvGSSWCs", 22,"[FLAG_MATCH] = '1'","")	
+			F.Data.DataView.ToDataTable("dtGSSWCs", "dvGSSWCs","dtMatchedWCs", True)
+			F.Data.DataView.Close("dtGSSWCs", "dvGSSWCs")	
+			
+			'Looping through dt to update all jobs in SFC
+			F.Intrinsic.Control.For(V.Local.iCounter, 0, V.DataTable.dtMatchedWCs.RowCount--, 1)
+			
+				f.Intrinsic.Control.CallSub("GetUniqueJob", "JSS", V.DataTable.dtMatchedWCs(V.Local.iCounter).JSS!FieldValTrim, "Priority", V.Local.sPriority)
+				
+				'PUT process
+				F.Communication.HTTP.ResetHeaders
+				F.Communication.HTTP.SetProperty("HTTPMethod", "PUT")
+				
+				'URL + Endpoint
+				F.Intrinsic.String.Build("{0}{1}", V.Global.sURL, "Jobs", V.Local.sEndPointURL)
+				
+				'Setting properties
+				F.Communication.HTTP.SetProperty("URL", V.Local.sEndPointURL)
+				F.Communication.HTTP.SetProperty("Authorization", V.Global.sToken)
+				F.Communication.HTTP.SetProperty("ContentType","application/json")
+				F.Communication.HTTP.SetProperty("Accept","*/*")
+				
+				'Creating dictionary to get machine type
+				F.Data.Dictionary.CreateFromDataTable("dictMachine", "dtSFCMachines", "name", "machineType")
+				F.Data.DataTable.AddColumn("dtUniqueJob", "machineType", "String")
+				F.Data.Dictionary.SetDefaultReturn("dictMachine", "")
+				F.Data.DataTable.FillFromDictionary("dtUniqueJob", "dictMachine", "machineName", "machineType")
+				F.Data.Dictionary.Close("dictMachine")
+			
+				'Building JSON body to PUT
+				F.Intrinsic.String.Build("{"machineName": "{5}", "jobNumber": "{0}", "priority": {1}, "trackingItems": [{"typeName": "{6}","valueName": "{7}","valueDescription": "", "status": "Available", "machineTypeName": "{4}", "properties": null, "affiliations": []}, {"typeName": "{8}","valueName": "{9}","valueDescription": "", "status": "Available", "machineTypeName": "{4}", "properties": null, "affiliations": []}],"quantity": {2}, "dueDate": "{3}", "requeueActionType": "NONE", "requeuePercentage": 100, "comment": "", "autoGenerateJobNumber": false}", V.DataTable.dtMatchedWCs(V.Local.iCounter).JSS!FieldValTrim, V.DataTable.dtUniqueJob(0).priority!FieldValLong, V.DataTable.dtUniqueJob(0).quantity!FieldValLong, V.DataTable.dtUniqueJob(0).dueDate!FieldValTrim, V.DataTable.dtUniqueJob(0).machineType!FieldValTrim, V.DataTable.dtUniqueJob(0).machineName!FieldValTrim, V.DataTable.dtItems(0).typeName!FieldValTrim, V.DataTable.dtItems(0).valueName!FieldValTrim, V.DataTable.dtItems(1).typeName!FieldValTrim, V.DataTable.dtItems(1).valueName!FieldValTrim, V.Local.sBody)
+				
+				'Updating file
+				F.Communication.HTTP.SetProperty("PostData", V.Local.sBody)
+				F.Communication.HTTP.Put(V.Local.sEndPointURL)
+				
+				'Closing temporary dts
+				F.Data.DataTable.Close("dtUniqueJob")	
+				F.Data.DataTable.Close("dtItems")	
+				
+			F.Intrinsic.Control.Next(V.Local.iCounter)
+		
+		F.Intrinsic.Control.EndIf
+	F.Intrinsic.Control.EndIf
+	
+F.Intrinsic.Control.Catch
+	
+	'Logging error that prevented job from being posted.
+	f.Communication.HTTP.ReadProperty("TransferredData", V.Local.sResponse)
+	F.Intrinsic.String.Build("Job {0} wasn't updated/deleted, Job {3}-{4}.{1}{2}.", V.DataView.dtMatchedWCs!dvMatchedWCs(V.Local.iCounter2).JSS!FieldValTrim, V.Ambient.Newline, V.Local.sResponse, V.DataView.dtMatchedWCs!dvMatchedWCs(V.Local.iCounter2).JOB!FieldValTrim, V.DataView.dtMatchedWCs!dvMatchedWCs(V.Local.iCounter2).SUFFIX!FieldValTrim, V.Local.sMessage)
+	F.Intrinsic.Control.CallSub("Logging_JobError", "Message", V.Local.sMessage)
+	F.Intrinsic.Control.CallSub("UpdatePriority", "Job", V.DataView.dtMatchedWCs!dvMatchedWCs(V.Local.iCounter2).JOB!FieldValTrim, "Suffix", V.DataView.dtMatchedWCs!dvMatchedWCs(V.Local.iCounter2).SUFFIX!FieldValTrim)
+	
+F.Intrinsic.Control.EndTry
+Program.Sub.PriorityCode.End
+
+Program.Sub.MachineTypeValues.Start
+'This subroutine populates the actual primary and secondary values for each selected WC's machine type
+
+F.Intrinsic.Control.Try
+
+	v.Local.sSQL.Declare(String)
+	V.Local.iCounter.Declare(Long)
+	
+	'Looping through dt to populate primary and secondary values
+	F.Intrinsic.Control.For(V.Local.iCounter, 0, V.DataTable.dtUniqueTypes.RowCount--, 1)
+		
+		F.Intrinsic.Control.If(V.DataTable.dtUniqueTypes(v.Local.iCounter).MACHINE_TYPE!FieldValTrim, =, "Stamping Press")
+		
+			F.Data.DataTable.SetValue("dtUniqueTypes", V.Local.iCounter, "PRIMARY_VALUE", V.Global.sToolID, "SECONDARY_VALUE", V.Global.sPart)
+			
+		F.Intrinsic.Control.ElseIf(V.DataTable.dtUniqueTypes(v.Local.iCounter).MACHINE_TYPE!FieldValTrim, =, "Robot Welder")
+			
+			F.Data.DataTable.SetValue("dtUniqueTypes", V.Local.iCounter, "PRIMARY_VALUE", V.Global.sPart, "SECONDARY_VALUE", "fixtureNumber")
+		
+		F.Intrinsic.Control.EndIf
+	
+	F.Intrinsic.Control.Next(V.Local.iCounter)
+	
+	'Creating dictionary to populate primary value for each machine type in main dt
+	F.Data.Dictionary.CreateFromDataTable("dictValues", "dtUniqueTypes", "MACHINE_TYPE", "PRIMARY_VALUE")
+	F.Data.Dictionary.SetDefaultReturn("dictValues", "")
+	F.Data.DataTable.FillFromDictionary("dtMatchedWCs", "dictValues", "MACHINE_TYPE", "PRIMARY_VALUE")
+	F.Data.Dictionary.Close("dictValues")
+	
+	'Creating dictionary to populate secondary value for each machine type in main dt
+	F.Data.Dictionary.CreateFromDataTable("dictValues", "dtUniqueTypes", "MACHINE_TYPE", "SECONDARY_VALUE")
+	F.Data.Dictionary.SetDefaultReturn("dictValues", "")
+	F.Data.DataTable.FillFromDictionary("dtMatchedWCs", "dictValues", "MACHINE_TYPE", "SECONDARY_VALUE")
+	F.Data.Dictionary.Close("dictValues")
+
+F.Intrinsic.Control.Catch
+
+	F.Intrinsic.Control.CallSub(CatchError)
+	
+F.Intrinsic.Control.EndTry
+Program.Sub.MachineTypeValues.End
+
+Program.Sub.Logging_CreatedJob.Start
+'This subroutine creates a log file to store jobs that were successfully posted to SFC.
+
+F.Intrinsic.Control.Try
+
+	V.Local.sPath.Declare(String)
+	V.Local.sFile.Declare(String)
+	V.Local.bExists.Declare(Boolean)
+	V.Local.bExists2.Declare(Boolean)
+	V.Local.sMessage.Declare(String)
+	V.Local.sContents.Declare(String)
+	
+	V.Local.sMessage.Set(V.Args.Message)
+	
+	'Checking if log folder exists
+	F.Intrinsic.String.Build("{0}\CUSTOM\6600\LOG", V.Caller.GlobalDir, V.Local.sPath)
+	F.Intrinsic.File.DirExists(V.Local.sPath, V.Local.bExists)
+	F.Intrinsic.Control.If(V.Local.bExists.Not)
+		
+		F.Intrinsic.File.CreateDir(V.Local.sPath)
+	
+	F.Intrinsic.Control.EndIf
+	
+	'Checking if log file exists
+	F.Intrinsic.String.Build("{0}\6600 Created Job Log.txt", V.Local.sPath, V.Local.sFile)
+	
+	F.Intrinsic.File.Exists(V.Local.sFile, V.Local.bExists2)
+	F.Intrinsic.Control.If(V.Local.bExists2.Not)
+		
+		F.Intrinsic.String.Build("{0} {1}: Log Start", V.Ambient.Date.FormatYYYY-MM-DD, V.Ambient.Time.Format!HH:NN:SS, V.Local.sContents)
+		F.Intrinsic.File.String2File(V.Local.sFile, V.Local.sContents)
+		
+	F.Intrinsic.Control.EndIf
+	
+	F.Intrinsic.String.Build("{0} {1}: {2}", V.Ambient.Date.FormatYYYY-MM-DD, V.Ambient.Time.Format!HH:NN:SS, V.Local.sMessage, V.Local.sContents)
+	F.Intrinsic.File.Append2FileNewLine(V.Local.sFile, V.Local.sContents)
+	
+F.Intrinsic.Control.Catch
+
+	F.Intrinsic.Control.CallSub(CatchError)
+	
+F.Intrinsic.Control.EndTry
+Program.Sub.Logging_CreatedJob.End
+
+Program.Sub.Logging_DeletedJob.Start
+'This subroutine creates a log file to store jobs that were successfully posted to SFC.
+
+F.Intrinsic.Control.Try
+
+	V.Local.sPath.Declare(String)
+	V.Local.sFile.Declare(String)
+	V.Local.bExists.Declare(Boolean)
+	V.Local.bExists2.Declare(Boolean)
+	V.Local.sMessage.Declare(String)
+	V.Local.sContents.Declare(String)
+	
+	V.Local.sMessage.Set(V.Args.Message)
+	
+	'Checking if log folder exists
+	F.Intrinsic.String.Build("{0}\CUSTOM\6600\LOG", V.Caller.GlobalDir, V.Local.sPath)
+	F.Intrinsic.File.DirExists(V.Local.sPath, V.Local.bExists)
+	F.Intrinsic.Control.If(V.Local.bExists.Not)
+		
+		F.Intrinsic.File.CreateDir(V.Local.sPath)
+	
+	F.Intrinsic.Control.EndIf
+	
+	'Checking if log file exists
+	F.Intrinsic.String.Build("{0}\6600 Deleted Job Log.txt", V.Local.sPath, V.Local.sFile)
+	
+	F.Intrinsic.File.Exists(V.Local.sFile, V.Local.bExists2)
+	F.Intrinsic.Control.If(V.Local.bExists2.Not)
+		
+		F.Intrinsic.String.Build("{0} {1}: Log Start", V.Ambient.Date.FormatYYYY-MM-DD, V.Ambient.Time.Format!HH:NN:SS, V.Local.sContents)
+		F.Intrinsic.File.String2File(V.Local.sFile, V.Local.sContents)
+		
+	F.Intrinsic.Control.EndIf
+	
+	F.Intrinsic.String.Build("{0} {1}: {2}", V.Ambient.Date.FormatYYYY-MM-DD, V.Ambient.Time.Format!HH:NN:SS, V.Local.sMessage, V.Local.sContents)
+	F.Intrinsic.File.Append2FileNewLine(V.Local.sFile, V.Local.sContents)
+	
+F.Intrinsic.Control.Catch
+
+	F.Intrinsic.Control.CallSub(CatchError)
+	
+F.Intrinsic.Control.EndTry
+Program.Sub.Logging_DeletedJob.End
+
+Program.Sub.Logging_Error.Start
+'This subroutine creates a log file to store any errors.
+
+F.Intrinsic.Control.Try
+
+	V.Local.sPath.Declare(String)
+	V.Local.sFile.Declare(String)
+	V.Local.bExists.Declare(Boolean)
+	V.Local.bExists2.Declare(Boolean)
+	V.Local.sMessage.Declare(String)
+	V.Local.sContents.Declare(String)
+	
+	V.Local.sMessage.Set(V.Args.Message)
+	
+	'Checking if log folder exists
+	F.Intrinsic.String.Build("{0}\CUSTOM\6600\LOG", V.Caller.GlobalDir, V.Local.sPath)
+	F.Intrinsic.File.DirExists(V.Local.sPath, V.Local.bExists)
+	F.Intrinsic.Control.If(V.Local.bExists.Not)
+		
+		F.Intrinsic.File.CreateDir(V.Local.sPath)
+	
+	F.Intrinsic.Control.EndIf
+	
+	'Checking if log file exists
+	F.Intrinsic.String.Build("{0}\6600 Error Log.txt", V.Local.sPath, V.Local.sFile)
+	
+	F.Intrinsic.File.Exists(V.Local.sFile, V.Local.bExists2)
+	F.Intrinsic.Control.If(V.Local.bExists2.Not)
+		
+		F.Intrinsic.String.Build("{0} {1}: Log Start", V.Ambient.Date.FormatYYYY-MM-DD, V.Ambient.Time.Format!HH:NN:SS, V.Local.sContents)
+		F.Intrinsic.File.String2File(V.Local.sFile, V.Local.sContents)
+		
+	F.Intrinsic.Control.EndIf
+	
+	F.Intrinsic.String.Build("{0} {1}: {2}", V.Ambient.Date.FormatYYYY-MM-DD, V.Ambient.Time.Format!HH:NN:SS, V.Local.sMessage, V.Local.sContents)
+	F.Intrinsic.File.Append2FileNewLine(V.Local.sFile, V.Local.sContents)
+	
+F.Intrinsic.Control.Catch
+
+	F.Intrinsic.Control.CallSub(CatchError)
+	
+F.Intrinsic.Control.EndTry
+Program.Sub.Logging_Error.End
+
+Program.Sub.Logging_JobError.Start
+'This subroutine creates a log file to store any errors.
+
+F.Intrinsic.Control.Try
+
+	V.Local.sPath.Declare(String)
+	V.Local.sFile.Declare(String)
+	V.Local.bExists.Declare(Boolean)
+	V.Local.bExists2.Declare(Boolean)
+	V.Local.sMessage.Declare(String)
+	V.Local.sContents.Declare(String)
+	
+	V.Local.sMessage.Set(V.Args.Message)
+	
+	'Checking if log folder exists
+	F.Intrinsic.String.Build("{0}\CUSTOM\6600\LOG", V.Caller.GlobalDir, V.Local.sPath)
+	F.Intrinsic.File.DirExists(V.Local.sPath, V.Local.bExists)
+	F.Intrinsic.Control.If(V.Local.bExists.Not)
+		
+		F.Intrinsic.File.CreateDir(V.Local.sPath)
+	
+	F.Intrinsic.Control.EndIf
+	
+	'Checking if log file exists
+	F.Intrinsic.String.Build("{0}\6600 Job Error Log.txt", V.Local.sPath, V.Local.sFile)
+	
+	F.Intrinsic.File.Exists(V.Local.sFile, V.Local.bExists2)
+	F.Intrinsic.Control.If(V.Local.bExists2.Not)
+		
+		F.Intrinsic.String.Build("{0} {1}: Log Start", V.Ambient.Date.FormatYYYY-MM-DD, V.Ambient.Time.Format!HH:NN:SS, V.Local.sContents)
+		F.Intrinsic.File.String2File(V.Local.sFile, V.Local.sContents)
+		
+	F.Intrinsic.Control.EndIf
+	
+	F.Intrinsic.String.Build("{0} {1}: {2}", V.Ambient.Date.FormatYYYY-MM-DD, V.Ambient.Time.Format!HH:NN:SS, V.Local.sMessage, V.Local.sContents)
+	F.Intrinsic.File.Append2FileNewLine(V.Local.sFile, V.Local.sContents)
+	
+F.Intrinsic.Control.Catch
+
+	F.Intrinsic.Control.CallSub(CatchError)
+	
+F.Intrinsic.Control.EndTry
+Program.Sub.Logging_JobError.End
+
+Program.Sub.GetUniqueJob.Start
+'Getting all existing machines in Shop Floor Connect, 3rd party software.
+'V.Args.JSS, V.Args.Priority
+
+F.Intrinsic.Control.Try
+
+	V.Local.sEndPointURL.Declare(String)
+	V.Local.sFile.Declare(String)
+	V.Local.sMachineName.Declare(String)
+	V.Local.sDueDate.Declare(String)
+	V.Local.fQty.Declare(Float)
+	V.Local.iPriority.Declare(Long)
+	V.Local.iCounter.Declare(Long)
+	V.Local.bHasXPath.Declare(Boolean)
+	V.Local.sXPath.Declare(String)
+	V.Local.sTypeName.Declare(String)
+	V.Local.sValueName.Declare(String)
+	
+	V.Local.iPriority.Set(V.Args.Priority.Long)
+	
+	'Creating dt
+	F.Data.DataTable.Create("dtUniqueJob", True)
+	F.Data.DataTable.AddColumn("dtUniqueJob", "machineName", "String")
+	F.Data.DataTable.AddColumn("dtUniqueJob", "quantity", "Long")
+	F.Data.DataTable.AddColumn("dtUniqueJob", "priority", "Long")
+	F.Data.DataTable.AddColumn("dtUniqueJob", "dueDate", "String")
+
+	'GET process
+	F.Communication.HTTP.ResetHeaders
+	F.Communication.HTTP.SetProperty("HTTPMethod", "GET")
+	
+	'URL + Endpoint
+	F.Intrinsic.String.Build("{0}{1}{2}", V.Global.sURL, "Jobs/job/", V.Args.JSS, V.Local.sEndPointURL)
+	
+	'Setting properties
+	F.Communication.HTTP.SetProperty("URL", V.Local.sEndPointURL)
+	F.Communication.HTTP.SetProperty("Authorization", V.Global.sToken)
+	
+	'Local File - The path to a local file for downloading. If the file exists, it is overwritten.
+	F.Intrinsic.String.Build("{0}\UniqueJob.json", V.Caller.TempDir, V.Local.sFile)
+	F.Communication.HTTP.SetProperty("LocalFile", V.Local.sFile)
+	
+	F.Communication.HTTP.Get(V.Local.sEndPointURL)
+	
+	'Reading JSON file
+	F.Communication.JSON.ParseFile(V.Local.sFile)
+	
+	'Converting priority
+	F.Intrinsic.Math.Evaluate("999 - [V.Local.iPriority] + 1", V.Local.iPriority)
+	F.Data.DataTable.AddRow("dtUniqueJob", "priority", V.Local.iPriority)
+
+	'Building strings to read an specific node's value
+	'Getting machine name
+	F.Communication.JSON.SetProperty("XPath","/json/schedule/machineName/")
+	F.Communication.JSON.ReadProperty("XText",V.Local.sMachineName)
+	F.Intrinsic.String.TrimChar(V.Local.sMachineName,V.Ambient.DblQuote,V.Local.sMachineName)
+	
+	'Getting qty
+	F.Communication.JSON.SetProperty("XPath","/json/schedule/quantity/")
+	F.Communication.JSON.ReadProperty("XText",V.Local.fQty)
+	F.Intrinsic.String.TrimChar(V.Local.fQty,V.Ambient.DblQuote,V.Local.fQty)
+
+	'Getting due date
+	F.Communication.JSON.SetProperty("XPath","/json/schedule/dueDate/")
+	F.Communication.JSON.ReadProperty("XText",V.Local.sDueDate)
+	F.Intrinsic.String.TrimChar(V.Local.sDueDate,V.Ambient.DblQuote,V.Local.sDueDate)
+	
+	'Updating row
+	F.Data.DataTable.SetValue("dtUniqueJob", 0, "machineName", V.Local.sMachineName, "quantity", V.Local.fQty, "dueDate", V.Local.sDueDate)
+	
+	'Creating dt for tracking items
+	F.Data.DataTable.Create("dtItems", True)
+	F.Data.DataTable.AddColumn("dtItems", "typeName", "String")
+	F.Data.DataTable.AddColumn("dtItems", "valueName", "String")
+	
+	'Looping through tracking items
+	'Nodes start on 1, not 0
+	V.Local.iCounter.Set(1)
+	V.Local.bHasXPath.Set(True)
+	
+	'Do Until because if XPath doesnt exists, then I dont need to loop
+	F.Intrinsic.Control.DoUntil(V.Local.bHasXPath.Not)
+		
+		F.Intrinsic.String.Build("/json/schedule/trackingItems/[{0}]/",V.Local.iCounter,V.Local.sXPath)
+		F.Communication.JSON.HasXPath(V.Local.sXPath,V.Local.bHasXPath)
+		
+		F.Intrinsic.Control.If(V.Local.bHasXPath)
+			
+			'Building string to read item's typeName
+			F.Intrinsic.String.Build("/json/schedule/trackingItems/[{0}]/typeName/",V.Local.iCounter,V.Local.sXPath)
+			F.Communication.JSON.SetProperty("XPath",V.Local.sXPath)
+			F.Communication.JSON.ReadProperty("XText",V.Local.sTypeName)
+			F.Intrinsic.String.TrimChar(V.Local.sTypeName,V.Ambient.DblQuote,V.Local.sTypeName)
+		
+			'Building string to read item's typeName
+			F.Intrinsic.String.Build("/json/schedule/trackingItems/[{0}]/valueName/",V.Local.iCounter,V.Local.sXPath)
+			F.Communication.JSON.SetProperty("XPath",V.Local.sXPath)
+			F.Communication.JSON.ReadProperty("XText",V.Local.sValueName)
+			F.Intrinsic.String.TrimChar(V.Local.sValueName,V.Ambient.DblQuote,V.Local.sValueName)
+			
+			'Adding row to dt
+			F.Data.DataTable.AddRow("dtItems", "typeName", V.Local.sTypeName, "valueName", V.Local.sValueName)
+			
+		F.Intrinsic.Control.EndIf
+			
+		F.Intrinsic.Math.Add(V.Local.iCounter,1,V.Local.iCounter)
+		
+	F.Intrinsic.Control.Loop
+	
+F.Intrinsic.Control.Catch
+	
+	F.Intrinsic.Control.CallSub(CatchError)
+	
+F.Intrinsic.Control.EndTry
+Program.Sub.GetUniqueJob.End
+
+Program.Sub.UpdatePriority.Start
+'This subroutine updates a WO's priority to XXX, which means the job wasn't posted to SFC when it was created in GSS due to XYZ.
+
+F.Intrinsic.Control.Try
+
+	v.Local.sJob.Declare(String)
+	v.Local.sSuffix.Declare(String)
+	v.Local.sSQL.Declare(String)
+	
+	v.Local.sJob.Set(v.Args.Job)
+	v.Local.sSuffix.Set(v.Args.Suffix)
+	
+	F.Intrinsic.String.Build("update JOB_HEADER set PRIORITY = 'XXX' where JOB = '{1}' and SUFFIX = '{2}';", V.Local.sJob, V.Local.sSuffix, V.Local.sSQL)
+	F.ODBC.Connection!Con.Execute(V.Local.sSQL)
+
+F.Intrinsic.Control.Catch
+	
+	F.Intrinsic.Control.CallSub(CatchError)
+	
+F.Intrinsic.Control.EndTry
+Program.Sub.UpdatePriority.End
+
+Program.Sub.PostToSFC.Start
+'This subroutine creates a new job in SFC
+'V.Args.Job, V.Args.Suffix
+
+F.Intrinsic.Control.Try
+
+	V.Local.sJob.Declare(String)
+	V.Local.sSuffix.Declare(String)
+	V.Local.sSQL.Declare(String)
+	V.Local.sPriorityCode.Declare(String)
+	
+	'Setting variables
+	V.Local.sJob.Set(V.Args.Job)
+	V.Local.sSuffix.Set(V.Args.Suffix)
+	
+	'Getting WO's priority code
+	F.ODBC.Connection!Con.OpenCompanyConnection
+	F.Intrinsic.String.Build("select RTRIM(PRIORITY) PRIORITY from V_JOB_HEADER where JOB = '{0}' and SUFFIX = '{1}';", v.Local.sJob, v.Local.sSuffix, V.Local.sSQL)
+	F.ODBC.Connection!Con.ExecuteAndReturn(V.Local.sSQL, V.Local.sPriorityCode)
+	F.ODBC.Connection!Con.Close
+	
+	'Not posting a job whose priority code = blank or 000.
+	F.Intrinsic.Control.If(V.Local.sPriorityCode, <>, "")
+	
+		F.Intrinsic.Control.If(V.Local.sPriorityCode, <>, "000")
+	
+			'Calling sub to verify if custom table exists
+			F.Intrinsic.Control.CallSub("CheckTable")
+			F.Intrinsic.Control.CallSub("TokenValidation")
+			
+			'Calling sub to get existing machine list in SFC
+			F.Intrinsic.Control.CallSub("GetMachineConfiguration")
+		
+			'Calling sub to get machines type configuration
+			F.Intrinsic.Control.CallSub("GetMachineTypeConf")
+		
+			'Creating dt with all required information
+			F.ODBC.Connection!Con.OpenCompanyConnection
+			F.Intrinsic.String.Build("select RTRIM(A.JOB) JOB, RTRIM(A.SUFFIX) SUFFIX, RTRIM(A.JOB) + RTRIM(A.SUFFIX) + RTRIM(A.SEQ) JSS, RTRIM(A.PART) WC, RTRIM(UCASE(A.DESCRIPTION)) WC_DESCRIPTION_OLD, A.UNITS_OPEN, A.DATE_DUE, RTRIM(A.PART) + ' ' + RTRIM(B.WC_NAME) WC_DESCRIPTION from V_JOB_OPERATIONS A left join V_WORKCENTERS B on A.PART = B.MACHINE where A.JOB = '{0}' and A.SUFFIX = '{1}' and A.LMO = 'L' and A.SEQ < '995000' order by JSS ASC;", v.Local.sJob, v.Local.sSuffix, V.Local.sSQL)
+			F.Data.DataTable.CreateFromSQL("dtGSSWCs", "Con", V.Local.sSQL, True)
+			
+			'Getting recently created WO's part number. No need to check if there is a part returned, there will be one since job has just been created.
+			F.Intrinsic.String.Build("select RTRIM(PART) PART from V_JOB_HEADER where JOB = '{0}' and SUFFIX = '{1}' ;", v.Local.sJob, v.Local.sSuffix, V.Local.sSQL)
+			F.ODBC.Connection!Con.ExecuteAndReturn(V.Local.sSQL, V.Global.sPart)
+			f.ODBC.Connection!Con.Close
+			
+			'Creating dictionary to validate whether each GSS WC exist in SFC. If there is no match, it means the program should not create the job in SFC.
+			F.Data.Dictionary.CreateFromDataTable("dictMachine", "dtSFCMachines", "name", "FLAG_SFC")
+			F.Data.DataTable.AddColumn("dtGSSWCs", "FLAG_MATCH", "String")
+			F.Data.Dictionary.SetDefaultReturn("dictMachine", "0")
+			F.Data.DataTable.FillFromDictionary("dtGSSWCs", "dictMachine", "WC_DESCRIPTION", "FLAG_MATCH")
+			F.Data.Dictionary.Close("dictMachine")
+			
+			'Creating final dt with all jobs to be created in SFC
+			F.Data.DataView.Create("dtGSSWCs", "dvGSSWCs", 22,"[FLAG_MATCH] = '1'","")	
+			F.Data.DataView.ToDataTable("dtGSSWCs", "dvGSSWCs","dtMatchedWCs", True)
+			F.Data.DataView.Close("dtGSSWCs", "dvGSSWCs")	
+			
+			'Creating dictionary to get the machine type
+			F.Data.Dictionary.CreateFromDataTable("dictMachine", "dtSFCMachines", "name", "machineType")
+			F.Data.DataTable.AddColumn("dtMatchedWCs", "MACHINE_TYPE", "String")
+			F.Data.Dictionary.SetDefaultReturn("dictMachine", "")
+			F.Data.DataTable.FillFromDictionary("dtMatchedWCs", "dictMachine", "WC_DESCRIPTION", "MACHINE_TYPE")
+			F.Data.Dictionary.Close("dictMachine")
+			
+			'Creating dictionary to get the primary type used by a machine
+			F.Data.Dictionary.CreateFromDataTable("dictMachine", "dtSFCMachineType", "name", "primary")
+			F.Data.DataTable.AddColumn("dtMatchedWCs", "PRIMARY", "String")
+			F.Data.Dictionary.SetDefaultReturn("dictMachine", "")
+			F.Data.DataTable.FillFromDictionary("dtMatchedWCs", "dictMachine", "MACHINE_TYPE", "PRIMARY")
+			F.Data.Dictionary.Close("dictMachine")
+			
+			'Creating dictionary to the secondary type used by a machine
+			F.Data.Dictionary.CreateFromDataTable("dictMachine", "dtSFCMachineType", "name", "secondary")
+			F.Data.DataTable.AddColumn("dtMatchedWCs", "SECONDARY", "String")
+			F.Data.Dictionary.SetDefaultReturn("dictMachine", "")
+			F.Data.DataTable.FillFromDictionary("dtMatchedWCs", "dictMachine", "MACHINE_TYPE", "SECONDARY")
+			F.Data.Dictionary.Close("dictMachine")
+			
+			'Creating dt with unique WCs
+			F.Data.DataView.Create("dtMatchedWCs", "dvMatchedWCs", 22,"","")	
+			F.Data.DataView.ToDataTableDistinct("dtMatchedWCs", "dvMatchedWCs","dtUniqueWCs", "WC", True)
+			F.Data.DataView.Close("dtMatchedWCs", "dvMatchedWCs")	
+			
+			'Adding columns to be filled in later
+			F.Data.DataTable.AddColumn("dtMatchedWCs", "PRIMARY_VALUE", "String")
+			F.Data.DataTable.AddColumn("dtMatchedWCs", "SECONDARY_VALUE", "String")
+			
+			'Getting tool ID associated with WO tool part number
+			F.Intrinsic.Control.CallSub("GetToolID", "Job", v.Local.sJob, "Suffix", v.Local.sSuffix)
+	
+			'Creating dt with unique machine types
+			F.Data.DataView.Create("dtMatchedWCs", "dvMatchedWCs", 22,"","")	
+			F.Data.DataView.ToDataTableDistinct("dtMatchedWCs", "dvMatchedWCs","dtUniqueTypes", "MACHINE_TYPE", True)
+			F.Data.DataView.Close("dtMatchedWCs", "dvMatchedWCs")	
+			
+			'Adding columns to write actual values
+			F.Data.DataTable.AddColumn("dtUniqueTypes", "PRIMARY_VALUE", "String")
+			F.Data.DataTable.AddColumn("dtUniqueTypes", "SECONDARY_VALUE", "String")
+			
+			'Calling to populate values for each machine type
+			F.Intrinsic.Control.CallSub("MachineTypeValues")
+		
+			'Calling sub to post new jobs in SFC
+			F.Intrinsic.Control.CallSub("PostJobs")
+			
+		F.Intrinsic.Control.EndIf
+	F.Intrinsic.Control.EndIf
+
+F.Intrinsic.Control.Catch
+	
+	F.Intrinsic.Control.CallSub(CatchError)
+	
+F.Intrinsic.Control.EndTry
+Program.Sub.PostToSFC.End
+
+Program.Sub.Comments.Start
+${$5$}$20.1.8223.27623$}$1
+${$6$}$apadilla$}$20220919161442161$}$Lag9STqBJOmNXSbd5+msRcBWPGz0aFqSzPePUG9qWbx6a2I2X7Td4YMjrYBLxMUyXq6Wacte7xu/iEbbo06Jqw==
+Program.Sub.Comments.End
